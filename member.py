@@ -2,7 +2,7 @@ import re
 import time
 from typing import Optional, Dict, Any, List
 
-from config.session import session
+from config.session import session, refresh_session_cookies
 from lib.storage import store_data
 from lib.parsers.profile import parse_profile
 
@@ -22,11 +22,23 @@ def is_invalid_profile(html: str) -> bool:
     return False
 
 
-def fetch_profile_html(uid: int) -> Optional[str]:
+def fetch_profile_html(uid: int, allow_retry: bool = True) -> Optional[str]:
     """Fetch raw profile HTML for a given user ID."""
     url = PROFILE_BASE.format(uid=uid)
     try:
         resp = session.get(url, timeout=30)
+        
+        # If we get a 403, try to refresh cookies once
+        if resp.status_code == 403 and allow_retry:
+            print(f"[!] UID {uid} → HTTP 403, attempting to refresh cookies...")
+            if refresh_session_cookies(session, url):
+                print(f"[+] Cookies refreshed, retrying UID {uid}")
+                # Retry the request with refreshed cookies, but don't allow further retries
+                return fetch_profile_html(uid, allow_retry=False)
+            else:
+                print(f"[-] Failed to refresh cookies for UID {uid}")
+                return None
+        
         if resp.status_code in (403, 404):
             print(f"[-] UID {uid} → HTTP {resp.status_code}")
             return None
