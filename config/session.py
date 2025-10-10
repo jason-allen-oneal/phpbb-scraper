@@ -235,5 +235,32 @@ def build_session(base_domain: str = DEFAULT_DOMAIN) -> requests.Session:
     return s
 
 
+def refresh_session_cookies(s: requests.Session, failed_url: str, base_domain: str = DEFAULT_DOMAIN) -> bool:
+    """
+    Attempt to refresh session cookies using cloudscraper when a 403 is encountered.
+    Returns True if cookies were successfully refreshed, False otherwise.
+    """
+    log.info("[session] Attempting to refresh cookies due to 403 on %s", failed_url)
+    
+    # Try cloudscraper refresh on the failed URL
+    new_jar = _attempt_cloudscraper_refresh(failed_url)
+    if new_jar:
+        # Update session cookies
+        _merge_cookies_to_session(s, new_jar)
+        # Persist to .env
+        new_cookie_str = _serialize_cookie_jar(s.cookies, base_domain)
+        current_env = os.getenv("DF_COOKIES", "")
+        if not current_env or _cookies_differ(current_env, s.cookies):
+            log.info("[session] Saving refreshed cookies into .env after 403")
+            try:
+                _write_env_cookies(new_cookie_str)
+            except Exception:
+                log.exception("[session] Failed saving refreshed cookies to .env")
+        return True
+    
+    log.warning("[session] Failed to refresh cookies for 403 error")
+    return False
+
+
 # Expose module-level session for convenience
 session = build_session()

@@ -1,13 +1,25 @@
 import re
 import time
 from typing import Optional
-from config.session import session
+from config.session import session, refresh_session_cookies
 from lib.storage import store_data
 from lib.parsers.topic import parse_posts
 
-def fetch_page(url):
+def fetch_page(url, allow_retry=True):
     try:
         resp = session.get(url, timeout=30)
+        
+        # If we get a 403, try to refresh cookies once
+        if resp.status_code == 403 and allow_retry:
+            print(f"[!] HTTP 403 on {url}, attempting to refresh cookies...")
+            if refresh_session_cookies(session, url):
+                print(f"[+] Cookies refreshed, retrying {url}")
+                # Retry the request with refreshed cookies, but don't allow further retries
+                return fetch_page(url, allow_retry=False)
+            else:
+                print(f"[-] Failed to refresh cookies for {url}")
+                return None
+        
         if resp.status_code != 200:
             print(f"[!] Error {resp.status_code} on {url}")
             return None
