@@ -1,0 +1,84 @@
+# === Environment / Secrets ===
+.env
+.env.*
+!env.example
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyw
+*.pdb
+*.egg-info/
+*.eggs/
+build/
+dist/
+wheels/
+*.manifest
+*.spec
+*.lock
+*.log
+*.tmp
+*.bak
+
+# === Virtual Environments ===
+.venv/
+venv/
+env/
+ENV/
+
+# === Output Data ===
+output/
+data/
+logs/
+cache/
+*.jsonl
+*.db
+*.sqlite
+*.sqlite3
+*.csv
+*.json
+
+# === Editor / OS ===
+.vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# === Coverage / Testing ===
+.coverage
+.pytest_cache/
+nosetests.xml
+coverage.xml
+htmlcov/
+
+# === Backup / Temp ===
+~$*
+*.tmp
+*.bak
+*.old
+*.orig
+
+# === CloudScraper Cache ===
+cloudscraper_debug.log
+
+# === Project-specific ===
+# Avoid pushing sensitive scraping session data
+session_cookies.txt
+cookies.json
+auth_cache/
+scraper_debug.log
+
+# === System ===
+# Ignore compiled binary caches or core dumps
+*.so
+*.dll
+*.dylib
+*.core
+*.out
