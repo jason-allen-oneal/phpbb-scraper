@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 from config import BASE_URL
 from lib.session_manager import SessionManager
 from lib.storage import store_data
-import topic
+from lib import topic
 
 PAGE_SIZE = 30
 
