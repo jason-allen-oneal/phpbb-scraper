@@ -67,14 +67,51 @@ DB_NAME=phpbb_scraper
 
 ### Application Flow
 
-The scraper follows this flow:
-1. **Starts Playwright browser** (headless by default)
-2. **Loads saved session** (from `session.json` if exists)
-3. **Checks login status** by visiting the forum index
-4. **Performs login if needed** (waits for user to complete login in browser)
-5. **Saves session** (cookies and storage state)
-6. **Executes the selected task** using the authenticated session
-7. **Stores results** (to files or database as configured)
+The scraper follows this flow to ensure proper session management and Cloudflare mitigation:
+
+```
+User runs main.py
+    ↓
+Playwright browser starts (headless or visible)
+    ↓
+Load session.json (if exists) ← Previous cookies/session restored
+    ↓
+Navigate to forum index
+    ↓
+Check login status (look for logout links, control panel, etc.)
+    ↓
+    ├─ Already logged in? → Continue to task
+    │
+    └─ Not logged in or --force-login?
+        ↓
+        Navigate to login page
+        ↓
+        Wait for user to complete login manually
+        ↓
+        Detect successful login (logout link appears)
+        ↓
+        Save session.json ← Cookies/session persisted
+        ↓
+        Continue to task
+    ↓
+Execute selected task (members/forums/thread/all)
+    ↓
+Make requests using authenticated browser session
+    ↓
+Cloudflare challenges handled automatically by real browser
+    ↓
+Store scraped data (files or database)
+    ↓
+Save session.json on exit ← Session updated
+    ↓
+Close browser and Playwright
+```
+
+**Key Points:**
+- Browser automation bypasses Cloudflare challenges
+- Session persists between runs (no re-login needed)
+- Manual login only required on first run or when session expires
+- Real browser prevents detection as bot
 
 ### First Run - Interactive Login
 
