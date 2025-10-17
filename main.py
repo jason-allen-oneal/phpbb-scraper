@@ -10,9 +10,9 @@ import time
 
 from lib.session_manager import SessionManager
 from lib.storage import close_storage, init_storage
-import members
+from lib import members
 from lib import forum
-import topic
+from lib import topic
 
 
 async def run_thread_scrape(session: SessionManager, args: argparse.Namespace) -> None:

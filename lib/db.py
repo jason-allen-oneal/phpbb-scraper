@@ -1,5 +1,5 @@
-import pymysql
-from pymysql import Error
+import mysql.connector
+from mysql.connector import Error
 from config import DB_HOST, DB_NAME, DB_USER, DB_PASS, DB_PORT
 import json
 from typing import List, Dict, Any, Optional
@@ -8,7 +8,7 @@ from typing import List, Dict, Any, Optional
 def get_connection():
     """Get a database connection"""
     try:
-        conn = pymysql.connect(
+        conn = mysql.connector.connect(
             host=DB_HOST,
             user=DB_USER,
             password=DB_PASS,
@@ -30,7 +30,7 @@ def query(sql: str, params: Optional[tuple] = None) -> Optional[List[Dict[str, A
         return None
     
     try:
-        cursor = conn.cursor(pymysql.cursors.DictCursor)
+        cursor = conn.cursor(dictionary=True)
         cursor.execute(sql, params or ())
         
         # Auto-detect: fetch results if SELECT, commit otherwise
