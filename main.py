@@ -10,8 +10,8 @@ from pathlib import Path
 
 from lib.storage import init_storage, close_storage
 import topic
-import member
-import forum
+import members as member
+from lib import forum
 
 
 OUTPUT_DIR = Path("output")
@@ -39,7 +39,8 @@ def run_member_scrape(args):
     member.scrape_members(
         start_uid=args.start or 1,
         stop_uid=args.stop,
-        delay=args.delay
+        delay=args.delay,
+        headless=True
     )
 
 
@@ -50,20 +51,28 @@ def run_forum_index(args):
 
 def run_all(args):
     """
-    Run full scrape sequence:
-      1. Member list + profiles
-      2. Forum index + topics
+    Run COMPLETE scrape sequence - EVERYTHING:
+      1. Member profiles
+      2. Forum structure + topics
+      3. Thread content (posts from discovered topics)
     """
-    print("[>] Running full ALL task (members → forums → threads)")
+    print("[>] Running COMPLETE ALL task (members → forums → thread content)")
+    
     # Step 1: Members
+    print("\n=== STEP 1: MEMBER SCRAPING ===")
     member.scrape_members(
         start_uid=args.start or 1,
         stop_uid=args.stop,
-        delay=args.delay
+        delay=args.delay,
+        headless=True
     )
+    
     # Step 2: Forums + Topics
+    print("\n=== STEP 2: FORUM SCRAPING ===")
     forum.scrape_all_forums(delay=args.delay, limit_pages=args.limit_pages)
-    print("[✔] Completed ALL task sequence.")
+    
+    print("[✔] Completed COMPLETE ALL task sequence.")
+    print("[+] Scraped: Members + Forum Structure + Thread Content")
 
 
 def main():
