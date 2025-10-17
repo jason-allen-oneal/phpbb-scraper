@@ -2,16 +2,16 @@
 
 ## Quick Start
 
-### 1. Setup Session (Login)
-First, you need to login and save your session:
+### 1. Authenticate (first run)
+The first scraping run will launch Playwright. Use the `--show-browser` flag to see the browser window and `--force-login` to
+force a fresh login if needed:
 
 ```bash
-# Run the session setup (will open browser for login)
-python setup_session.py
-
-# Or force new login even if session exists
-python setup_session.py --force-login
+# Trigger an interactive login (opens a browser window)
+python main.py --task members --start 1 --stop 1 --show-browser --force-login
 ```
+
+Once authenticated, subsequent runs can stay headless unless the session expires.
 
 ### 2. Run Scraper
 

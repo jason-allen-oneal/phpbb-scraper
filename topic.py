@@ -1,231 +1,235 @@
-#!/usr/bin/env python3
-import requests, json, time, asyncio
+"""Thread scraping utilities for DarkForum."""
+
+from __future__ import annotations
+
+import asyncio
+from dataclasses import dataclass
+from typing import Iterable, Optional
+from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlunparse
+
 from bs4 import BeautifulSoup
-from lib.storage import store_data
-from config import HEADERS, BASE_URL
+
+from config import BASE_URL
 from lib.session_manager import SessionManager
+from lib.storage import store_data
 
-# =========================
-# CONFIGURATION
-# =========================
-BASE_URL = f"{BASE_URL}viewtopic.php"
 
-# =========================
-# PARSER
-# =========================
-def parse_print_view(html):
-    """Parse a Tapatalk/PhpBB print view.
-    Detects error pages and extracts posts with author ID, name, timestamp, and content.
-    """
+@dataclass(slots=True)
+class ThreadPost:
+    """Representation of a single post in a thread print view."""
+
+    author: Optional[str]
+    author_id: Optional[str]
+    timestamp: Optional[str]
+    content: str
+    forum_id: Optional[int] = None
+    topic_id: Optional[int] = None
+    topic_title: Optional[str] = None
+    page_offset: Optional[int] = None
+
+    def with_context(self, **context: int | str | None) -> "ThreadPost":
+        for key, value in context.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
+        return self
+
+    def to_record(self) -> dict:
+        record = {
+            "author": self.author,
+            "author_id": self.author_id,
+            "timestamp": self.timestamp,
+            "content": self.content,
+            "forum_id": self.forum_id,
+            "topic_id": self.topic_id,
+            "topic_title": self.topic_title,
+            "page_offset": self.page_offset,
+        }
+        return {key: value for key, value in record.items() if value is not None}
+
+
+@dataclass(slots=True)
+class TopicIdentifiers:
+    forum_id: Optional[int]
+    topic_id: Optional[int]
+
+
+def ensure_print_view(url: str) -> str:
+    """Ensure the provided URL references the print view."""
+
+    parsed = urlparse(urljoin(BASE_URL, url))
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    params["view"] = ["print"]
+    params.pop("start", None)
+    new_query = urlencode(params, doseq=True)
+    return urlunparse(parsed._replace(query=new_query))
+
+
+def build_page_url(base_print_url: str, offset: int) -> str:
+    if offset <= 0:
+        return base_print_url
+
+    parsed = urlparse(base_print_url)
+    params = parse_qs(parsed.query, keep_blank_values=True)
+    params["start"] = [str(offset)]
+    new_query = urlencode(params, doseq=True)
+    return urlunparse(parsed._replace(query=new_query))
+
+
+def parse_topic_url(url: str) -> TopicIdentifiers:
+    parsed = urlparse(urljoin(BASE_URL, url))
+    params = parse_qs(parsed.query)
+
+    def _parse_int(values: Iterable[str]) -> Optional[int]:
+        for value in values:
+            if value.isdigit():
+                return int(value)
+        return None
+
+    return TopicIdentifiers(
+        forum_id=_parse_int(params.get("f", [])),
+        topic_id=_parse_int(params.get("t", [])),
+    )
+
+
+def parse_print_view(html: str) -> tuple[list[ThreadPost], Optional[str]]:
+    """Parse the print view HTML and return posts along with an optional error message."""
+
     soup = BeautifulSoup(html, "lxml")
-
-    # Detect error/info page
     error_box = soup.select_one("div#message div.message-content")
     if error_box:
-        msg = error_box.get_text(strip=True)
-        return {"error": True, "message": msg, "posts": []}
+        return [], error_box.get_text(strip=True)
 
-    posts = []
-    for post in soup.select("div.post"):
-        # --- Author ---
-        author_link = post.select_one("div.author a[href*='memberlist.php?mode=viewprofile']")
+    posts: list[ThreadPost] = []
+    for container in soup.select("div.post"):
+        author_link = container.select_one("div.author a[href*='memberlist.php?mode=viewprofile']")
+        author_div = container.select_one("div.author strong")
+        author = (author_link or author_div).get_text(strip=True) if (author_link or author_div) else None
+        author_id = None
         if author_link:
-            author = author_link.get_text(strip=True)
             href = author_link.get("href", "")
-            # Extract numeric author id from the link (u=###)
-            author_id = None
             if "u=" in href:
-                try:
-                    author_id = href.split("u=")[-1].split("&")[0]
-                except Exception:
-                    author_id = None
-        else:
-            # fallback: try <div.author strong>
-            author_div = post.select_one("div.author strong")
-            author = author_div.get_text(strip=True) if author_div else None
-            author_id = None
+                author_id = href.split("u=")[-1].split("&")[0]
 
-        # --- Timestamp ---
-        date_div = post.select_one("div.date strong")
-        timestamp = date_div.get_text(strip=True) if date_div else None
+        timestamp_div = container.select_one("div.date strong")
+        timestamp = timestamp_div.get_text(strip=True) if timestamp_div else None
 
-        # --- Content ---
-        content_div = post.select_one("div.content")
+        content_div = container.select_one("div.content")
         content = ""
         if content_div:
             for br in content_div.find_all("br"):
                 br.replace_with("\n")
             content = content_div.get_text("\n", strip=True)
 
-        posts.append({
-            "author": author,
-            "author_id": author_id,
-            "timestamp": timestamp,
-            "content": content,
-        })
+        posts.append(ThreadPost(author=author, author_id=author_id, timestamp=timestamp, content=content))
 
-    return {"error": False, "posts": posts}
+    return posts, None
 
 
-# =========================
-# SCRAPER FOR ONE TOPIC
-# =========================
-def scrape_all_pages_for_topic(session, forum_id, topic_id, step=10, pause=1.0):
-    """Scrape all paginated print-view pages for a given topic."""
-    all_posts = []
-    offset = 0
-    prev_signature = None
+async def scrape_print_view(
+    session: SessionManager,
+    base_print_url: str,
+    *,
+    start: int = 0,
+    stop: Optional[int] = None,
+    step: int = 10,
+    delay: float = 1.0,
+    collection: str = "thread_posts",
+    context: Optional[dict] = None,
+) -> list[ThreadPost]:
+    """Scrape a thread print view and store the posts."""
+
+    context = context or {}
+    offset = max(0, start)
+    previous_signature: Optional[tuple] = None
+    all_posts: list[ThreadPost] = []
 
     while True:
-        url = f"{BASE_URL}?f={forum_id}&t={topic_id}&view=print"
-        if offset > 0:
-            url += f"&start={offset}"
-
-        print(f"[+] Fetching forum={forum_id}, topic={topic_id}, start={offset}")
-        try:
-            r = session.get(url, timeout=15)
-            r.raise_for_status()
-        except Exception as e:
-            print(f"[!] Request error for f={forum_id}, t={topic_id}, start={offset}: {e}")
+        if stop is not None and offset > stop:
             break
 
-        parsed = parse_print_view(r.text)
-        if parsed["error"]:
-            print(f"[x] Error page for f={forum_id}, t={topic_id}: {parsed['message']}")
+        page_url = build_page_url(base_print_url, offset)
+        print(f"[>] Fetching thread page start={offset}: {page_url}")
+        response = await session.make_request(page_url)
+        if not response:
+            print(f"[!] Failed to fetch page at offset {offset}")
             break
 
-        posts = parsed["posts"]
+        html = response.get("content", "")
+        posts, error = parse_print_view(html)
+        if error:
+            print(f"[x] Error while scraping thread: {error}")
+            break
         if not posts:
-            print(f"[!] No posts found on page start={offset}, stopping.")
+            print("[!] No posts found on this page, stopping")
             break
 
-        signature = "|".join(f"{p['author']}@{p['timestamp']}" for p in posts)
-        if signature == prev_signature:
-            print(f"[!] Duplicate page detected at start={offset}, stopping pagination.")
+        signature = tuple((post.author, post.timestamp, post.content) for post in posts)
+        if previous_signature == signature:
+            print("[!] Duplicate page detected, stopping pagination")
             break
-        prev_signature = signature
+        previous_signature = signature
 
-        print(f"    -> {len(posts)} posts parsed")
-        all_posts.extend(posts)
+        enriched = [post.with_context(page_offset=offset, **context) for post in posts]
+        store_data(collection, [post.to_record() for post in enriched])
+        all_posts.extend(enriched)
+        print(f"[+] Stored {len(posts)} posts from offset {offset}")
 
         offset += step
-        time.sleep(pause)
+        if step <= 0:
+            break
+        await asyncio.sleep(delay)
 
     return all_posts
 
 
-async def scrape_all_pages_for_topic_async(session: SessionManager, forum_id, topic_id, step=10, pause=1.0):
-    """Async version of topic scraping using session manager"""
-    all_posts = []
-    offset = 0
-    prev_signature = None
-
-    while True:
-        url = f"{BASE_URL}?f={forum_id}&t={topic_id}&view=print"
-        if offset > 0:
-            url += f"&start={offset}"
-
-        print(f"[+] Fetching forum={forum_id}, topic={topic_id}, start={offset}")
-        try:
-            response = await session.make_request(url)
-            if not response:
-                print(f"[!] Request error for f={forum_id}, t={topic_id}, start={offset}")
-                break
-                
-            html = response.get("content", "")
-        except Exception as e:
-            print(f"[!] Request error for f={forum_id}, t={topic_id}, start={offset}: {e}")
-            break
-
-        parsed = parse_print_view(html)
-        if parsed["error"]:
-            print(f"[x] Error page for f={forum_id}, t={topic_id}: {parsed['message']}")
-            break
-
-        posts = parsed["posts"]
-        if not posts:
-            print(f"[!] No posts found on page start={offset}, stopping.")
-            break
-
-        signature = "|".join(f"{p['author']}@{p['timestamp']}" for p in posts)
-        if signature == prev_signature:
-            print(f"[!] Duplicate page detected at start={offset}, stopping pagination.")
-            break
-        prev_signature = signature
-
-        print(f"    -> {len(posts)} posts parsed")
-        all_posts.extend(posts)
-
-        offset += step
-        await asyncio.sleep(pause)
-
-    return all_posts
+async def scrape_topic(
+    session: SessionManager,
+    forum_id: int,
+    topic_id: int,
+    *,
+    topic_title: Optional[str] = None,
+    delay: float = 1.0,
+    step: int = 10,
+    stop: Optional[int] = None,
+) -> list[ThreadPost]:
+    base = ensure_print_view(f"viewtopic.php?f={forum_id}&t={topic_id}")
+    context = {"forum_id": forum_id, "topic_id": topic_id, "topic_title": topic_title}
+    return await scrape_print_view(
+        session,
+        base,
+        start=0,
+        stop=stop,
+        step=step,
+        delay=delay,
+        collection="thread_posts",
+        context=context,
+    )
 
 
-# =========================
-# SCRAPER FOR MULTIPLE FORUMS + TOPICS
-# =========================
-def scrape_forums(start_f=1, end_f=100, start_t=1, end_t=10000, step=10, pause=1.0, consecutive_errors=20):
-    """Iterate through all forums and topics sequentially."""
-    session = requests.Session()
-    session.headers.update(HEADERS)
+async def scrape_thread_from_url(
+    session: SessionManager,
+    topic_url: str,
+    *,
+    start: int = 0,
+    stop: Optional[int] = None,
+    step: int = 10,
+    delay: float = 1.0,
+) -> list[ThreadPost]:
+    """Scrape a thread using an arbitrary topic URL."""
 
-    for f in range(start_f, end_f + 1):
-        print(f"\n########## FORUM {f} ##########")
-        error_streak = 0
-
-        for t in range(start_t, end_t + 1):
-            url = f"{BASE_URL}?f={f}&t={t}&view=print"
-            print(f"\n=== Forum {f} | Topic {t} ===")
-
-            try:
-                r = session.get(url, timeout=15)
-                r.raise_for_status()
-                parsed = parse_print_view(r.text)
-            except Exception as e:
-                print(f"[!] Request error for f={f}, t={t}: {e}")
-                error_streak += 1
-                if error_streak >= consecutive_errors:
-                    print("[!] Too many consecutive failures. Skipping to next forum.")
-                    break
-                continue
-
-            if parsed["error"]:
-                print(f"[x] Missing f={f}, t={t}: {parsed['message']}")
-                error_streak += 1
-                if error_streak >= consecutive_errors:
-                    print("[!] Too many missing topics in a row — moving to next forum.")
-                    break
-                continue
-
-            error_streak = 0
-            print(f"[+] Valid topic {t} in forum {f}, scraping pages...")
-
-            all_posts = scrape_all_pages_for_topic(session, f, t, step=step, pause=pause)
-
-            if all_posts:
-                collection_name = f"forum_{f}_topic_{t}"
-                store_data(collection_name, all_posts)
-                print(f"[✔] Stored {len(all_posts)} posts in collection {collection_name}")
-            else:
-                print(f"[!] Topic {t} in forum {f} had no posts extracted.")
-
-            time.sleep(pause)
-
-        print(f"########## Finished forum {f} ##########\n")
-        time.sleep(pause * 2)
-
-
-# =========================
-# MAIN ENTRY POINT
-# =========================
-if __name__ == "__main__":
-    scrape_forums(
-        start_f=1,
-        end_f=300,
-        start_t=1,
-        end_t=20000,
-        step=10,
-        pause=1.0,
-        consecutive_errors=200
+    base_print_url = ensure_print_view(topic_url)
+    identifiers = parse_topic_url(topic_url)
+    context = {
+        "forum_id": identifiers.forum_id,
+        "topic_id": identifiers.topic_id,
+    }
+    return await scrape_print_view(
+        session,
+        base_print_url,
+        start=start,
+        stop=stop,
+        step=step,
+        delay=delay,
+        collection="thread_posts",
+        context=context,
     )

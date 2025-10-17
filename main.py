@@ -1,110 +1,111 @@
 #!/usr/bin/env python3
-"""
-DarkForum Scraper - Unified Entry Point
-"""
+"""Unified entry point for the DarkForum scraper."""
+
+from __future__ import annotations
 
 import argparse
+import asyncio
 import sys
 import time
-from pathlib import Path
 
-from lib.storage import init_storage, close_storage
-import topic
-import members as member
+from lib.session_manager import SessionManager
+from lib.storage import close_storage, init_storage
+import members
 from lib import forum
+import topic
 
 
-OUTPUT_DIR = Path("output")
-OUTPUT_DIR.mkdir(exist_ok=True)
-
-
-def run_thread_scrape(args):
+async def run_thread_scrape(session: SessionManager, args: argparse.Namespace) -> None:
     if not args.url:
-        print("[!] --url required for task=thread")
+        print("[!] --url is required when task=thread")
         sys.exit(2)
+
     print(f"[>] Running thread scraper → {args.url}")
-    base_print = args.url + ("&" if ("?" in args.url) else "?") + "view=print"
-    topic.scrape_all_pages(
-        base_print_url=base_print,
+    await topic.scrape_thread_from_url(
+        session,
+        args.url,
         start=args.start,
         stop=args.stop,
         step=args.step,
-        pause=args.delay,
-        out_collection="thread_posts"
+        delay=args.delay,
     )
 
 
-def run_member_scrape(args):
+async def run_member_scrape(session: SessionManager, args: argparse.Namespace) -> None:
     print("[>] Running member scraper (UID enumeration)")
-    member.scrape_members(
-        start_uid=args.start or 1,
+    await members.scrape_members(
+        session=session,
+        start_uid=args.start,
         stop_uid=args.stop,
         delay=args.delay,
-        headless=True
     )
 
 
-def run_forum_index(args):
+async def run_forum_index(session: SessionManager, args: argparse.Namespace) -> None:
     print("[>] Running forum indexer")
-    forum.scrape_all_forums(delay=args.delay, limit_pages=args.limit_pages)
+    await forum.scrape_all_forums(session=session, delay=args.delay, limit_pages=args.limit_pages)
 
 
-def run_all(args):
-    """
-    Run COMPLETE scrape sequence - EVERYTHING:
-      1. Member profiles
-      2. Forum structure + topics
-      3. Thread content (posts from discovered topics)
-    """
+async def run_all(session: SessionManager, args: argparse.Namespace) -> None:
     print("[>] Running COMPLETE ALL task (members → forums → thread content)")
-    
-    # Step 1: Members
+
     print("\n=== STEP 1: MEMBER SCRAPING ===")
-    member.scrape_members(
-        start_uid=args.start or 1,
-        stop_uid=args.stop,
-        delay=args.delay,
-        headless=True
-    )
-    
-    # Step 2: Forums + Topics
+    await run_member_scrape(session, args)
+
     print("\n=== STEP 2: FORUM SCRAPING ===")
-    forum.scrape_all_forums(delay=args.delay, limit_pages=args.limit_pages)
-    
+    await run_forum_index(session, args)
+
     print("[✔] Completed COMPLETE ALL task sequence.")
     print("[+] Scraped: Members + Forum Structure + Thread Content")
 
 
-def main():
+async def dispatch(args: argparse.Namespace) -> None:
+    async with SessionManager(headless=not args.show_browser) as session:
+        await session.ensure_logged_in(force_login=args.force_login)
+
+        if args.task == "thread":
+            await run_thread_scrape(session, args)
+        elif args.task == "members":
+            await run_member_scrape(session, args)
+        elif args.task == "forums":
+            await run_forum_index(session, args)
+        elif args.task == "all":
+            await run_all(session, args)
+        else:  # pragma: no cover - argparse enforces choices
+            print("Unknown task type.")
+            sys.exit(1)
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="DarkForum Scraper Controller")
     parser.add_argument(
-        "--task", required=True,
+        "--task",
+        required=True,
         choices=["thread", "members", "forums", "all"],
-        help="Which scrape to run (thread | members | forums | all)"
+        help="Which scrape to run",
     )
     parser.add_argument("--url", help="Topic URL when task=thread")
-    parser.add_argument("--delay", type=float, default=1.0)
-    parser.add_argument("--start", type=int, default=1, help="Starting UID or topic index")
-    parser.add_argument("--stop", type=int, default=None, help="Stop UID or topic index")
-    parser.add_argument("--step", type=int, default=10)
+    parser.add_argument("--delay", type=float, default=1.0, help="Delay between requests")
+    parser.add_argument("--start", type=int, default=1, help="Starting UID or page offset")
+    parser.add_argument("--stop", type=int, default=None, help="Stop UID or page offset")
+    parser.add_argument("--step", type=int, default=10, help="Pagination step for thread scraping")
     parser.add_argument("--limit-pages", type=int, default=None, help="Limit forum pages per forum")
+    parser.add_argument("--show-browser", action="store_true", help="Run Playwright in headed mode")
+    parser.add_argument("--force-login", action="store_true", help="Force a fresh login")
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
 
     init_storage()
     start_time = time.time()
 
     try:
-        if args.task == "thread":
-            run_thread_scrape(args)
-        elif args.task == "members":
-            run_member_scrape(args)
-        elif args.task == "forums":
-            run_forum_index(args)
-        elif args.task == "all":
-            run_all(args)
-        else:
-            print("Unknown task type.")
-            sys.exit(1)
+        asyncio.run(dispatch(args))
+    except KeyboardInterrupt:
+        print("\n[!] Interrupted by user")
     finally:
         close_storage()
 
